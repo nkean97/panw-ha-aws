@@ -343,7 +343,8 @@ echo
 
 python3 scripts/configure.py || {
   red "Post-deploy configuration reported problems - see above."
-  red "Infrastructure is up; re-run './deploy.sh --verify' after investigating."
+  red "Infrastructure is up. Finish configuration with 'python3 scripts/configure.py'"
+  red "(safe to re-run); './deploy.sh --verify' only checks, it changes nothing."
   exit 1
 }
 

@@ -114,10 +114,25 @@ class PanOS:
             raise PanOSError("%s: keygen returned no key" % self.name)
         return self.key
 
-    def op(self, cmd, timeout=120):
-        return self._request(
-            {"type": "op", "cmd": cmd, "key": self.key}, timeout=timeout
-        )
+    # Op commands are relayed to backend daemons, which drop out briefly while
+    # PAN-OS finishes boot or applies a plugin change (the failover-mode
+    # command does this). The API then answers e.g. "op command for client
+    # dagger timed out as client is not available"; it clears on its own.
+    TRANSIENT = ("client is not available", "timed out")
+
+    def op(self, cmd, timeout=120, retry_for=180):
+        deadline = time.time() + retry_for
+        while True:
+            try:
+                return self._request(
+                    {"type": "op", "cmd": cmd, "key": self.key}, timeout=timeout
+                )
+            except PanOSError as exc:
+                if time.time() >= deadline or not any(t in str(exc) for t in self.TRANSIENT):
+                    raise
+                print("  %s %s: management backend busy; retrying"
+                      % (_c("...", Colors.DIM), self.name), end="\r", flush=True)
+                time.sleep(10)
 
     def get(self, xpath):
         return self._request(
@@ -813,6 +828,7 @@ def main():
         if not check_license(fw):
             fetch_license(fw)
 
+    published = True
     if not args.verify_only:
         step("VM-Series AWS plugin failover mode")
         # The command syncs to the peer, so it is issued once.
@@ -821,7 +837,12 @@ def main():
         except PanOSError as exc:
             fail("could not set failover mode: %s" % exc)
 
-        publish_inbound(firewalls, inputs.get("inbound", {}))
+        # A failure here should not skip the health checks below.
+        try:
+            published = publish_inbound(firewalls, inputs.get("inbound", {}))
+        except PanOSError as exc:
+            fail("inbound publishing: %s" % exc)
+            published = False
 
     verify_aws_permissions(inputs)
     ha_ok, states = verify_ha(firewalls)
@@ -850,7 +871,7 @@ def main():
                 meta["mgmt_public_ip"], meta["availability_zone"]))
     info("floating service IP : %s" % inputs["floating_eip"]["public_ip"])
     info("failover route tables: %s" % ", ".join(inputs["route_table_ids"]))
-    return 0 if ha_ok else 1
+    return 0 if ha_ok and published else 1
 
 
 if __name__ == "__main__":
